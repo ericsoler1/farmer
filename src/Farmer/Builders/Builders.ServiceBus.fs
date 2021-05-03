@@ -51,7 +51,6 @@ type ServiceBusQueueBuilder() =
 
 type ServiceBusSubscriptionConfig =
     { Name : ResourceName
-
       LockDuration : TimeSpan option
       DuplicateDetection : TimeSpan option
       DefaultMessageTimeToLive : TimeSpan option
@@ -59,11 +58,13 @@ type ServiceBusSubscriptionConfig =
       Session : bool option
       DeadLetteringOnMessageExpiration : bool option
       Rules : Rule list }
+    interface IBuilder with
+        member this.ResourceId = subscriptions.resourceId this.Name
+        member this.BuildResources location = []
 
 type ServiceBusSubscriptionBuilder() =
     member _.Yield _ =
         { Name = ResourceName.Empty
-
           LockDuration = None
           DuplicateDetection = None
           DefaultMessageTimeToLive = None
@@ -99,36 +100,19 @@ type ServiceBusSubscriptionBuilder() =
     /// Adds a correlation filtering rule for a subscription
     [<CustomOperation "add_correlation_filter">]
     member this.AddCorrelationFilter(state:ServiceBusSubscriptionConfig, name, properties) = this.AddFilters(state, [ Rule.CreateCorrelationFilter(name, properties) ])
-
-
+    
 type ServiceBusTopicConfig =
     { Name : ResourceName
-      Namespace : LinkedResource
       DuplicateDetection : TimeSpan option
       DefaultMessageTimeToLive : TimeSpan option
       EnablePartitioning : bool option
-      Subscriptions : Map<ResourceName, ServiceBusSubscriptionConfig> }
-    interface IBuilder with
-        member this.ResourceId = topics.resourceId this.Name
-        member this.BuildResources location = [
-            { Name = this.Name
-              Dependencies = [
-                match this.Namespace with
-                | Managed resId -> resId // Only generate dependency if this is managed by Farmer (same template)
-                | _ -> ()                  
-              ] |> Set.ofList
-              Namespace =
-                match this.Namespace with
-                | Managed resId
-                | Unmanaged resId -> resId
-              DuplicateDetectionHistoryTimeWindow = this.DuplicateDetection |> Option.map IsoDateTime.OfTimeSpan
-              DefaultMessageTimeToLive = this.DefaultMessageTimeToLive |> Option.map IsoDateTime.OfTimeSpan
-              EnablePartitioning = this.EnablePartitioning }
+      Subscriptions : Map<ResourceName, ServiceBusSubscriptionConfig> } with
+        member this.BuildSubscriptions namespaceLinkedResource = [
             for subscription in this.Subscriptions do
                 let subscription = subscription.Value
                 { Name = subscription.Name
                   Namespace =
-                        match this.Namespace with
+                        match namespaceLinkedResource with
                         | Managed resId
                         | Unmanaged resId -> resId.Name
                   Topic = this.Name
@@ -140,16 +124,34 @@ type ServiceBusTopicConfig =
                   DeadLetteringOnMessageExpiration = subscription.DeadLetteringOnMessageExpiration
                   Rules = subscription.Rules }
         ]
-
+        member this.ResourceId = topics.resourceId this.Name
+        member this.BuildResources location namespaceLinkedResource = [
+            { Name = this.Name
+              Dependencies = [
+                match namespaceLinkedResource with
+                | Managed resId -> resId // Only generate dependency if this is managed by Farmer (same template)
+                | _ -> ()                  
+              ] |> Set.ofList
+              Namespace =
+                match namespaceLinkedResource with
+                | Managed resId
+                | Unmanaged resId -> resId
+              DuplicateDetectionHistoryTimeWindow = this.DuplicateDetection |> Option.map IsoDateTime.OfTimeSpan
+              DefaultMessageTimeToLive = this.DefaultMessageTimeToLive |> Option.map IsoDateTime.OfTimeSpan
+              EnablePartitioning = this.EnablePartitioning } :> IArmResource
+            
+            for subscription in this.BuildSubscriptions namespaceLinkedResource do
+                subscription
+        ]
+        static member internal Empty =
+            { Name = ResourceName.Empty
+              DuplicateDetection = None
+              DefaultMessageTimeToLive = None
+              EnablePartitioning = None
+              Subscriptions = Map.empty }
+    
 type ServiceBusTopicBuilder() =
-    member _.Yield _ =
-        { Name = ResourceName.Empty
-          Namespace = Managed (namespaces.resourceId ResourceName.Empty)
-          DuplicateDetection = None
-          DefaultMessageTimeToLive = None
-          EnablePartitioning = None
-          Subscriptions = Map.empty }
-
+    member _.Yield _ = ServiceBusTopicConfig.Empty
     /// The name of the queue.
     [<CustomOperation "name">] member _.Name(state:ServiceBusTopicConfig, name) = { state with Name = ResourceName name }
     /// Whether to enable duplicate detection, and if so, how long to check for.ServiceBusQueueConfig
@@ -168,12 +170,36 @@ type ServiceBusTopicBuilder() =
                 (state.Subscriptions, subscriptions)
                 ||> List.fold(fun state (subscription:ServiceBusSubscriptionConfig) -> state.Add(subscription.Name, subscription))
         }
+
+// needed to only expose IBuilder on a TopicConfig that has link_to_unmanaged_namespace specified
+type ServiceBusTopicUnmanagedNamespaceConfig =
+    { ServiceBusTopicConfig:ServiceBusTopicConfig
+      Namespace : ResourceId }
+    // This interface needs to exist on a different record because this interface existing on this recordType would allow a user to add a topic to an armTemplate without guaranteeing the namespace is either specified as an unmanaged or managed resource
+    interface IBuilder with
+        member this.ResourceId = this.ServiceBusTopicConfig.ResourceId
+        member this.BuildResources location =
+            this.ServiceBusTopicConfig.BuildResources location (Unmanaged this.Namespace)
+type ServiceBusTopicUnmanagedNamespaceBuilder() =
+    member _.Yield _ =
+        { ServiceBusTopicConfig = ServiceBusTopicConfig.Empty
+          Namespace = namespaces.resourceId ResourceName.Empty}
+    [<CustomOperation "add_topic">]
+    member _.AddTopic(state:ServiceBusTopicUnmanagedNamespaceConfig, topic) =
+        { state with ServiceBusTopicConfig = topic }
     /// Instead of creating a or modifying a namespace, configure this topic to point to another unmanaged namespace instance.
     [<CustomOperation "link_to_unmanaged_namespace">]
-    member this.LinkToUnmanagedNamespace (state:ServiceBusTopicConfig, namespaceName) =
-        { state with Namespace = Unmanaged(namespaces.resourceId(ResourceName namespaceName)) }
+    member this.LinkToUnmanagedNamespace (state:ServiceBusTopicUnmanagedNamespaceConfig, namespaceName) =
+        { state with Namespace = namespaces.resourceId(ResourceName namespaceName) }
+    member this.LinkToUnmanagedNamespace (state:ServiceBusTopicUnmanagedNamespaceConfig, namespaceName:ResourceName) =
+        { state with Namespace = namespaces.resourceId namespaceName }
+    member this.LinkToUnmanagedNamespace (state:ServiceBusTopicUnmanagedNamespaceConfig, resourceId) =
+        { state with Namespace = resourceId }
+    member _.Run (state:ServiceBusTopicUnmanagedNamespaceConfig) =
+        match state.Namespace.Name with
+        | EmptyResourceName -> failwith "Must be linked to unmanaged namespace"
+        | _ -> state
     
-
 type ServiceBusConfig =
     { Name : ResourceName
       Sku : Sku
@@ -213,8 +239,7 @@ type ServiceBusConfig =
                 EnablePartitioning = queue.EnablePartitioning }
 
             for topic in this.Topics do
-                let topic = {topic.Value with Namespace = Managed(namespaces.resourceId this.Name)} :> IBuilder
-                for topicResource in topic.BuildResources location do
+                for topicResource in topic.Value.BuildResources location (Managed(namespaces.resourceId this.Name)) do
                     topicResource
         ]
 
@@ -265,3 +290,4 @@ let serviceBus = ServiceBusBuilder()
 let topic = ServiceBusTopicBuilder()
 let queue = ServiceBusQueueBuilder()
 let subscription = ServiceBusSubscriptionBuilder()
+let topicUnmanagedNamespace = ServiceBusTopicUnmanagedNamespaceBuilder()
