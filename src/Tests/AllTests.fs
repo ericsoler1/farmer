@@ -43,6 +43,7 @@ let allTests =
                 StaticWebApp.tests
                 Storage.tests
                 Types.tests
+                VirtualHub.tests
                 VirtualMachine.tests
                 VirtualNetworkGateway.tests
                 VirtualWAN.tests

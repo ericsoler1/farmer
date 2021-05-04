@@ -1260,6 +1260,13 @@ module Databricks =
     type KeySource = Databricks | KeyVault member this.ArmValue = match this with Databricks -> "Default" | KeyVault -> "MicrosoftKeyVault"
     type Sku = Standard | Premium member this.ArmValue = match this with Standard -> "standard" | Premium -> "premium"
 
+module VirtualHub =
+    type Sku =
+        | Standard
+        member this.ArmValue =
+            match this with
+            | Standard -> "Standard"    
+
 namespace Farmer.DiagnosticSettings
 
 open Farmer
