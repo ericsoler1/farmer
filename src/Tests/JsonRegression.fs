@@ -7,6 +7,7 @@ open Farmer.Arm
 open Farmer.Network
 open System.IO
 open Farmer.ServiceBus
+open Farmer.AzureFirewall
 
 let tests =
     testList "ARM Writer Regression Tests" [
@@ -265,5 +266,14 @@ let tests =
                     ]
                 }
             compareResourcesToJson [ myVnet; lb ] "load-balancer.json"
+        }
+        test "AzureFirewall" {
+            let firewall = azureFirewall {
+                name "farmer_firewall"
+                sku SkuName.AZFW_Hub SkuTier.Standard
+                public_ip_reservation_count 2
+                link_to_unmanaged_vhub "unmanaged-vhub" 
+            }
+            compareResourcesToJson [ firewall ] "azure-firewall.json"
         }
     ]
